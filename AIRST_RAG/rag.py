@@ -44,6 +44,25 @@ chroma_client = Client(Settings())
 # Load embedding model
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 
+# LLM to use
+global llm
+llm = "openai/gpt-oss-120b:free"
+
+# All available LLMs
+available_llms = {
+    "Open AI GPT 120b": "openai/gpt-oss-120b:free",
+    "Qwen3 Next 80B A3B Instruct": "qwen/qwen3-next-80b-a3b-instruct:free",
+    "Llama 3.3 70B Instruct": "meta-llama/llama-3.3-70b-instruct:free",
+    "Nemotron 3 Super": "nvidia/nemotron-3-super-120b-a12b:free"
+}
+
+# Base prompt
+global base_prompt
+base_prompt = "You are an AI assistant that answers questions solely based on the provided context extracted from uploaded research papers. Answer the following question using only the information available in the context. If the provided context does not contain sufficient or relevant details to answer the question, respond exactly with: 'No relevant information found in the provided documents.'"
+
+global top_k_results
+top_k_results = 5
+
 # ---------- Persistence Functions ----------
 def load_processed_files():
     if os.path.exists(PERSISTENCE_FILE):
@@ -146,7 +165,7 @@ def delete_file(unique_filename):
     except Exception as e:
         st.error(f"Error deleting collection: {e}")
 
-def search_documents(query, top_k=5):
+def search_documents(query):
     results = []
     try:
         collections = chroma_client.list_collections()
@@ -158,7 +177,8 @@ def search_documents(query, top_k=5):
         name = col.name
         try:
             coll = chroma_client.get_collection(name=name)
-            search_result = coll.query(query_texts=[query], n_results=top_k)
+            search_result = coll.query(query_texts=[query], n_results=st.session_state.topkresultsslider)
+            print(top_k_results)
             for doc, distance in zip(search_result["documents"][0], search_result["distances"][0]):
                 results.append((name, doc, distance))
         except Exception as e:
@@ -179,14 +199,11 @@ def call_llm(context, question):
         "Content-Type": "application/json"
     }
     message = (
-        "You are an AI assistant that answers questions solely based on the provided context extracted from uploaded research papers. "
-        "Answer the following question using only the information available in the context. "
-        "If the provided context does not contain sufficient or relevant details to answer the question, "
-        "respond exactly with: 'No relevant information found in the provided documents.'\n\n"
+        f"{st.session_state.baseprompttext}\n\n"
         f"Context:\n{context}\n\n"
         f"Question: {question}"
     )
-    data = {"model": "qwen/qwq-32b:free", "messages": [{"role": "user", "content": message}]}
+    data = {f"model": available_llms[st.session_state.modelchoiceradio], "messages": [{"role": "user", "content": message}]}
     response = requests.post(url, headers=headers, data=json.dumps(data))
     if response.status_code == 200:
         try:
@@ -194,6 +211,14 @@ def call_llm(context, question):
         except Exception:
             return "Error parsing response from LLM."
     return f"Error from API: {response.status_code}, {response.text}"
+
+def update_base_prompt():
+    base_prompt = st.session_state.baseprompttext
+    print(base_prompt)
+
+def update_top_k_results():
+    top_k_results = st.session_state.topkresultsslider
+    print(top_k_results)
 
 # ---------- Streamlit Application ----------
 
@@ -206,7 +231,7 @@ def main():
         st.session_state["processed_files"] = load_processed_files()
 
     # Tabs: File Upload, PDFs/Docs list, and Prompt for Q&A.
-    tab_upload, tab_list, tab_prompt, tab_chat = st.tabs(["File Upload", "PDFs/Docs", "Prompt","Upload & Chat"])
+    tab_upload, tab_list, tab_prompt, tab_chat, configuration = st.tabs(["File Upload", "PDFs/Docs", "Prompt","Upload & Chat", "Configuration"])
     
     with tab_upload:
         st.header("Upload Research Papers")
@@ -222,8 +247,7 @@ def main():
                     if unique_filename:
                         st.success(f"Uploaded and processed file: {uploaded_file.name}")
                         st.session_state["processed_files"][uploaded_file.name] = unique_filename
-                        save_processed_files(st.session_state["processed_files"])
-    
+                        save_processed_files(st.session_state["processed_files"])  
     with tab_list:
         st.header("Uploaded Files")
         processed_files = st.session_state.get("processed_files", {})
@@ -237,13 +261,13 @@ def main():
                     save_processed_files(st.session_state["processed_files"])
         else:
             st.info("No files uploaded yet.")
-    
     with tab_prompt:
         st.header("Ask a Question")
         query = st.text_input("Enter your question:")
         if st.button("Get Answer"):
             if query:
                 search_results = search_documents(query)
+                print(search_results)
                 if search_results:
                     context = "\n\n".join([doc for _, doc, _ in search_results[:5]])
                 else:
@@ -279,6 +303,18 @@ def main():
                 chunks = chunk_text_improved(extracted_text)
                 summary = " ".join(chunks[:3])  # Summarize using the first few chunks
                 st.write(summary)
+    with configuration:
+        st.header("Configure your system's behavior")
+        if 'modelchoiceradio' not in st.session_state:
+            st.session_state.modelchoiceradio = llm
+        st.session_state.modelchoiceradio = st.radio("Free models to use from OpenRouter", available_llms.keys())
+        if 'baseprompttext' not in st.session_state:
+            st.session_state.baseprompttext = base_prompt
+        st.session_state.baseprompttext = st.text_area("Base prompt for LLM", st.session_state.baseprompttext, 200, on_change=update_base_prompt)
+        if 'topkresultsslider' not in st.session_state:
+            st.session_state.topkresultsslider = top_k_results
+        st.session_state.topkresultsslider = st.select_slider("Number of top results returned from document search", [3, 4, 5, 6, 7, 8, 9, 10], st.session_state.topkresultsslider, on_change=update_top_k_results)
+
 
 if __name__ == "__main__":
     main()
