@@ -37,6 +37,10 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # File for persistent mapping between original filename and unique filename
 PERSISTENCE_FILE = "processed_files.json"
+PERSISTENT_MEMORY = "mem.json"
+
+# how often is JSON updated
+UPDATE_FREQUENCY = 2
 
 # Initialize the ChromaDB client
 chroma_client = Client(Settings())
@@ -70,6 +74,27 @@ def load_processed_files():
             return json.load(f)
     return {}
 
+def load_persistent_memory():
+    if not os.path.exists(PERSISTENT_MEMORY):
+        template = {"interests": [], "knowledge_areas": [], "likes": [], "dislikes": []}
+        with open(PERSISTENT_MEMORY, "w", encoding="utf-8") as f:
+            json.dump(template, f, indent=4)
+
+    try:
+        with open(PERSISTENT_MEMORY,"r") as f:
+            raw = f.read()
+            js = json.loads(raw)
+            return raw, js
+    except:
+        st.warning("JSON file creation/loading failed")
+
+
+    return "",{}
+
+def save_persistent_memory(memfile):
+    with open(PERSISTENT_MEMORY,"w") as f:
+        json.dump(memfile, f)
+    
 def save_processed_files(mapping):
     with open(PERSISTENCE_FILE, "w") as f:
         json.dump(mapping, f)
@@ -186,7 +211,7 @@ def search_documents(query):
     results.sort(key=lambda x: x[2])
     return results
 
-def call_llm(context, question):
+def call_llm(context, question, mode):
     api_key = st.secrets.get("OPENROUTER_API_KEY")
     if not api_key:
         st.error("OpenRouter API key not provided in secrets.")
@@ -198,11 +223,25 @@ def call_llm(context, question):
         "X-Title": st.secrets.get("SITE_NAME", "My Site"),
         "Content-Type": "application/json"
     }
-    message = (
-        f"{st.session_state.baseprompttext}\n\n"
-        f"Context:\n{context}\n\n"
-        f"Question: {question}"
-    )
+    if mode == 0:
+            message = (
+            f"{st.session_state.baseprompttext}\n\n"
+            "Answer the following question using only the information available in the context. Appended to the context is JSON specifying certain relevant attributes of the user. "
+            "If the provided context does not contain sufficient or relevant details to answer the question, "
+            "respond exactly with: 'No relevant information found in the provided documents.'\n\n"
+            f"Context:\n{context}\n\n"
+            f"Question: {question}"
+        )
+    elif mode == 1:
+            message = (
+            "You are an AI assistant that answers questions solely based on the provided context extracted from uploaded research papers. "
+            "You will update the provided JSON file paying strict attention to correct formatting. You will perform this update based on the conversation context provided to you. "
+            "You will only add/remove from fields already present in the file, and will prevent bloat by only adding relevant information. "
+            "respond exactly with the updated JSON file with exactly the same structure as the one provided. It is critical that the JSON have a valid format.'\n\n"
+            f"Conversation history for this session:\n{context}\n\n"
+            f"Current raw JSON (update and return this):\n{question}"
+        )
+    #data = {"model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "messages": [{"role": "user", "content": message}]}
     data = {f"model": available_llms[st.session_state.modelchoiceradio], "messages": [{"role": "user", "content": message}]}
     response = requests.post(url, headers=headers, data=json.dumps(data))
     if response.status_code == 200:
@@ -229,6 +268,12 @@ def main():
     # Load persistent mapping into session state on app start
     if "processed_files" not in st.session_state:
         st.session_state["processed_files"] = load_processed_files()
+    if "message_count" not in st.session_state:
+        st.session_state["message_count"] = 0
+    if "messages" not in st.session_state:
+        st.session_state["messages"] = []
+    if "persistent_memory" not in st.session_state:
+        st.session_state["persistent_memory"] = load_persistent_memory()
 
     # Tabs: File Upload, PDFs/Docs list, and Prompt for Q&A.
     tab_upload, tab_list, tab_prompt, tab_chat, configuration = st.tabs(["File Upload", "PDFs/Docs", "Prompt","Upload & Chat", "Configuration"])
@@ -265,19 +310,36 @@ def main():
         st.header("Ask a Question")
         query = st.text_input("Enter your question:")
         if st.button("Get Answer"):
+            raw, _ = load_persistent_memory()
             if query:
                 search_results = search_documents(query)
                 print(search_results)
                 if search_results:
                     context = "\n\n".join([doc for _, doc, _ in search_results[:5]])
+                    context += raw
                 else:
                     context = ""
                 if not context:
                     st.error("No relevant content found from uploaded documents. Please check your upload and try a different query.")
                 else:
-                    answer = call_llm(context, query)
+                    answer = call_llm(context, query, 0)
                     st.write("**Answer:**")
                     st.write(answer)
+                    st.session_state["messages"].append(query)
+                    st.session_state["messages"].append(answer)
+
+                    st.session_state["message_count"]+=1
+                    if st.session_state["message_count"] % UPDATE_FREQUENCY == 0:
+                        context = "\n\n".join(st.session_state["messages"])
+                        answer = call_llm(context, raw, 1)
+                        print(answer)
+                        try:
+                            answer = json.loads(answer)
+                            with open(PERSISTENT_MEMORY, "w") as f:
+                                json.dump(answer, f)
+                        except:
+                            st.warning("Json dump failed")
+
             else:
                 st.warning("Please enter a question.")
     with tab_chat:
