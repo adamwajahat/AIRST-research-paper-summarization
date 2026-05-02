@@ -62,7 +62,7 @@ available_llms = {
 
 # Base prompt
 global base_prompt
-base_prompt = "You are an AI assistant that answers questions solely based on the provided context extracted from uploaded research papers. Answer the following question using only the information available in the context. If the provided context does not contain sufficient or relevant details to answer the question, respond exactly with: 'No relevant information found in the provided documents.'"
+base_prompt = "You are an AI assistant that answers questions solely based on the provided context extracted from uploaded research papers."
 
 global top_k_results
 top_k_results = 5
@@ -76,7 +76,7 @@ def load_processed_files():
 
 def load_persistent_memory():
     if not os.path.exists(PERSISTENT_MEMORY):
-        template = {"interests": [], "knowledge_areas": [], "likes": [], "dislikes": []}
+        template = {"current_research_areas": [], "education_level": [], "interests": [], "knowledge_areas": []}
         with open(PERSISTENT_MEMORY, "w", encoding="utf-8") as f:
             json.dump(template, f, indent=4)
 
